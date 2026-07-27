@@ -1,0 +1,927 @@
+# Guided Workshop — Kafka 4.2 KRaft Installation (6 Brokers + 5 Controllers on 3 VMs)
+
+## IP Addressing Plan (network 192.168.104.0/24, VMnet8)
+
+| VM | Hostname | IP Address | Role |
+|:--|:--|:--|:--|
+| VM1 | kafka-node1 | 10.18.0.5 | Broker 1, Broker 2, Controller 1, Controller 2 |
+| VM2 | kafka-node2 | 10.118.0.5 | Broker 3, Broker 4, Controller 3, Controller 4 |
+| VM3 | kafka-node3 | 10.128.0.5 | Broker 5, Broker 6, Controller 5 |
+
+## Node ID and Port Plan
+
+| Node ID | Role | VM | Client Port (PLAINTEXT) | Controller Port | log.dirs |
+|:--|:--|:--|:--|:--|:--|
+| 1 | Broker | VM1 | 9092 | — | /data/kafka/broker1 |
+| 2 | Broker | VM1 | 9093 | — | /data/kafka/broker2 |
+| 3 | Broker | VM2 | 9094 | — | /data/kafka/broker3 |
+| 4 | Broker | VM2 | 9095 | — | /data/kafka/broker4 |
+| 5 | Broker | VM3 | 9096 | — | /data/kafka/broker5 |
+| 6 | Broker | VM3 | 9097 | — | /data/kafka/broker6 |
+| 101 | Controller | VM1 | — | 9192 | /data/kafka/controller1 |
+| 102 | Controller | VM1 | — | 9193 | /data/kafka/controller2 |
+| 103 | Controller | VM2 | — | 9194 | /data/kafka/controller3 |
+| 104 | Controller | VM2 | — | 9195 | /data/kafka/controller4 |
+| 105 | Controller | VM3 | — | 9196 | /data/kafka/controller5 |
+
+> **Note:** Controller node.ids use the 101-105 range to avoid any conflict with broker node.ids (1-6), in compliance with KRaft requirements that mandate unique IDs within the cluster.[^1]
+
+***
+
+## Step 1 — VMware Network Preparation (one-time, on the host)
+
+1. Open **VMware Workstation → Edit → Virtual Network Editor**
+2. Select **VMnet8**, uncheck "Use local DHCP service" if you want static IPs, or note the DHCP range to avoid conflicts
+3. Assign the following static IPs to each VM (see Step 2)
+
+***
+
+## Step 2 — Network Configuration on Each Ubuntu 22.04 VM
+
+On **each VM**, edit the Netplan configuration:
+
+```bash
+sudo hostnamectl set-hostname kafka-node1
+
+sudo nano /etc/netplan/01-netcfg.yaml
+```
+
+**On VM1** (adjust `ens33` according to `ip a`):
+
+```yaml
+network:
+  version: 2
+  ethernets:
+    ens33:
+      dhcp4: no
+      addresses: [10.18.0.5/24]
+      routes:
+        - to: default
+          via: 192.168.104.2
+      nameservers:
+        addresses: [8.8.8.8, 1.1.1.1]
+```
+```bash
+sudo systemctl enable systemd-networkd
+sudo netplan apply
+ip addr show
+```
+
+Adjust the address for VM2 (`10.118.0.5/24`) and VM3 (`10.128.0.5/24`).
+
+```bash
+sudo chmod 600 /etc/netplan/00-installer-config.yaml
+sudo chown root:root /etc/netplan/00-installer-config.yaml
+
+sudo netplan apply
+```
+
+On each VM, edit `/etc/hosts` to add the 3 nodes:
+
+```bash
+sudo nano /etc/hosts
+```
+
+```
+10.18.0.5  kafka-node1
+10.118.0.5  kafka-node2
+10.128.0.5  kafka-node3
+```
+
+Test connectivity between VMs:
+
+```bash
+ping -c 3 kafka-node1
+ping -c 3 kafka-node2
+ping -c 3 kafka-node3
+```
+
+***
+
+## Step 3 — System Prerequisites (on all 3 VMs)
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y openjdk-21-jdk wget curl net-tools ufw openssl
+
+java -version
+```
+
+Create the dedicated user and directories:
+
+```bash
+sudo useradd -m -s /bin/bash kafka
+sudo passwd kafka 
+sudo mkdir -p /opt/kafka /data/kafka
+sudo chown -R kafka:kafka /opt/kafka /data/kafka
+```
+
+Configure the firewall (UFW) to open the required ports — **on each VM**:
+
+```bash
+sudo ufw allow 22/tcp
+sudo ufw allow 9092:9097/tcp
+sudo ufw allow 9192:9196/tcp
+sudo ufw allow ssh
+sudo ufw --force enable
+sudo ufw status
+```
+
+Increase open file limits (required for Kafka):
+
+```bash
+sudo tee -a /etc/security/limits.conf <<EOF
+kafka soft nofile 100000
+kafka hard nofile 100000
+EOF
+```
+
+***
+
+## Step 4 — Download and Install Kafka 4.2 (on all 3 VMs)
+
+```bash
+su - kafka
+cd /opt/kafka
+wget https://downloads.apache.org/kafka/4.2.1/kafka_2.13-4.2.1.tgz
+tar -xzf kafka_2.13-4.2.1.tgz
+mv kafka_2.13-4.2.1/* .
+rmdir kafka_2.13-4.2.1
+rm kafka_2.13-4.2.1.tgz
+```
+
+> **Version note:** confirm the exact 4.2.x version available on `https://downloads.apache.org/kafka/` at installation time, respecting the N-1 preference expressed by the client.[^2]
+
+***
+
+## Step 5 — Cluster ID Generation (once, on VM1)
+
+```bash
+/opt/kafka/bin/kafka-storage.sh random-uuid
+```
+
+Carefully record the generated UUID (example: `eCFJfuyGTTG-G5wu7YCz4A`). **This same UUID will be used on all 3 VMs.**
+
+***
+
+## Step 6 — Configuration Files for the 6 Brokers
+
+Create the config directory on each VM:
+
+```bash
+mkdir -p /opt/kafka/config/kraft-lab
+```
+On VM1, after Steps 6 and 7, you should have:
+
+```text
+/opt/kafka/config/kraft-lab/
+├── broker1.properties
+├── broker2.properties
+├── controller1.properties
+└── controller2.properties
+```
+On VM2:
+
+```text
+/opt/kafka/config/kraft-lab/
+├── broker3.properties
+├── broker4.properties
+├── controller3.properties
+└── controller4.properties
+```
+On VM3:
+
+```text
+/opt/kafka/config/kraft-lab/
+├── broker5.properties
+├── broker6.properties
+└── controller5.properties
+```
+
+### VM1 — `broker1.properties` (node.id=1)
+
+```properties
+process.roles=broker
+node.id=1
+controller.quorum.voters=101@10.18.0.5:9192,102@10.18.0.5:9193,103@10.118.0.5:9194,104@10.118.0.5:9195,105@10.128.0.5:9196
+
+listeners=PLAINTEXT://0.0.0.0:9092
+advertised.listeners=PLAINTEXT://10.18.0.5:9092
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+inter.broker.listener.name=PLAINTEXT
+
+log.dirs=/data/kafka/broker1
+broker.rack=West
+
+num.network.threads=8
+num.io.threads=8
+num.partitions=3
+default.replication.factor=3
+min.insync.replicas=2
+offsets.topic.replication.factor=3
+transaction.state.log.replication.factor=3
+transaction.state.log.min.isr=2
+
+log.retention.hours=168
+log.segment.bytes=1073741824
+```
+
+### VM1 — `broker2.properties` (node.id=2)
+
+Identical, changing:
+
+```properties
+process.roles=broker
+node.id=2
+controller.quorum.voters=101@10.18.0.5:9192,102@10.18.0.5:9193,103@10.118.0.5:9194,104@10.118.0.5:9195,105@10.128.0.5:9196
+
+listeners=PLAINTEXT://0.0.0.0:9093
+advertised.listeners=PLAINTEXT://10.18.0.5:9093
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+inter.broker.listener.name=PLAINTEXT
+
+log.dirs=/data/kafka/broker2
+broker.rack=West
+
+num.network.threads=8
+num.io.threads=8
+num.partitions=3
+default.replication.factor=3
+min.insync.replicas=2
+offsets.topic.replication.factor=3
+transaction.state.log.replication.factor=3
+transaction.state.log.min.isr=2
+
+log.retention.hours=168
+log.segment.bytes=1073741824
+```
+
+### VM2 — `broker3.properties` (node.id=3)
+
+```properties
+process.roles=broker
+node.id=3
+controller.quorum.voters=101@10.18.0.5:9192,102@10.18.0.5:9193,103@10.118.0.5:9194,104@10.118.0.5:9195,105@10.128.0.5:9196
+
+listeners=PLAINTEXT://0.0.0.0:9094
+advertised.listeners=PLAINTEXT://10.118.0.5:9094
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+inter.broker.listener.name=PLAINTEXT
+
+log.dirs=/data/kafka/broker3
+broker.rack=North
+
+num.network.threads=8
+num.io.threads=8
+num.partitions=3
+default.replication.factor=3
+min.insync.replicas=2
+offsets.topic.replication.factor=3
+transaction.state.log.replication.factor=3
+transaction.state.log.min.isr=2
+
+log.retention.hours=168
+log.segment.bytes=1073741824
+```
+
+### VM2 — `broker4.properties` (node.id=4)
+
+```properties
+process.roles=broker
+node.id=4
+controller.quorum.voters=101@10.18.0.5:9192,102@10.18.0.5:9193,103@10.118.0.5:9194,104@10.118.0.5:9195,105@10.128.0.5:9196
+
+listeners=PLAINTEXT://0.0.0.0:9095
+advertised.listeners=PLAINTEXT://10.118.0.5:9095
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+inter.broker.listener.name=PLAINTEXT
+
+log.dirs=/data/kafka/broker4
+broker.rack=North
+
+num.network.threads=8
+num.io.threads=8
+num.partitions=3
+default.replication.factor=3
+min.insync.replicas=2
+offsets.topic.replication.factor=3
+transaction.state.log.replication.factor=3
+transaction.state.log.min.isr=2
+
+log.retention.hours=168
+log.segment.bytes=1073741824
+```
+
+### VM3 — `broker5.properties` (node.id=5)
+
+```properties
+process.roles=broker
+node.id=5
+controller.quorum.voters=101@10.18.0.5:9192,102@10.18.0.5:9193,103@10.118.0.5:9194,104@10.118.0.5:9195,105@10.128.0.5:9196
+
+listeners=PLAINTEXT://0.0.0.0:9096
+advertised.listeners=PLAINTEXT://10.128.0.5:9096
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+inter.broker.listener.name=PLAINTEXT
+
+log.dirs=/data/kafka/broker5
+broker.rack=West
+
+num.network.threads=8
+num.io.threads=8
+num.partitions=3
+default.replication.factor=3
+min.insync.replicas=2
+offsets.topic.replication.factor=3
+transaction.state.log.replication.factor=3
+transaction.state.log.min.isr=2
+
+log.retention.hours=168
+log.segment.bytes=1073741824
+```
+
+### VM3 — `broker6.properties` (node.id=6)
+
+```properties
+process.roles=broker
+node.id=6
+controller.quorum.voters=101@10.18.0.5:9192,102@10.18.0.5:9193,103@10.118.0.5:9194,104@10.118.0.5:9195,105@10.128.0.5:9196
+
+listeners=PLAINTEXT://0.0.0.0:9097
+advertised.listeners=PLAINTEXT://10.128.0.5:9097
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+inter.broker.listener.name=PLAINTEXT
+
+log.dirs=/data/kafka/broker6
+broker.rack=North
+
+num.network.threads=8
+num.io.threads=8
+num.partitions=3
+default.replication.factor=3
+min.insync.replicas=2
+offsets.topic.replication.factor=3
+transaction.state.log.replication.factor=3
+transaction.state.log.min.isr=2
+
+log.retention.hours=168
+log.segment.bytes=1073741824
+```
+
+***
+
+## Step 7 — Configuration Files for the 5 Controllers
+
+### VM1 — `controller1.properties` (node.id=101)
+
+```properties
+process.roles=controller
+node.id=101
+controller.quorum.voters=101@10.18.0.5:9192,102@10.18.0.5:9193,103@10.118.0.5:9194,104@10.118.0.5:9195,105@10.128.0.5:9196
+
+listeners=CONTROLLER://0.0.0.0:9192
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=CONTROLLER:PLAINTEXT
+
+log.dirs=/data/kafka/controller1
+```
+
+### VM1 — `controller2.properties` (node.id=102)
+
+```properties
+process.roles=controller
+node.id=102
+controller.quorum.voters=101@10.18.0.5:9192,102@10.18.0.5:9193,103@10.118.0.5:9194,104@10.118.0.5:9195,105@10.128.0.5:9196
+
+listeners=CONTROLLER://0.0.0.0:9193
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=CONTROLLER:PLAINTEXT
+
+log.dirs=/data/kafka/controller2
+```
+
+### VM2 — `controller3.properties` (node.id=103)
+
+```properties
+process.roles=controller
+node.id=103
+controller.quorum.voters=101@10.18.0.5:9192,102@10.18.0.5:9193,103@10.118.0.5:9194,104@10.118.0.5:9195,105@10.128.0.5:9196
+
+listeners=CONTROLLER://0.0.0.0:9194
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=CONTROLLER:PLAINTEXT
+
+log.dirs=/data/kafka/controller3
+```
+
+### VM2 — `controller4.properties` (node.id=104)
+
+```properties
+process.roles=controller
+node.id=104
+controller.quorum.voters=101@10.18.0.5:9192,102@10.18.0.5:9193,103@10.118.0.5:9194,104@10.118.0.5:9195,105@10.128.0.5:9196
+
+listeners=CONTROLLER://0.0.0.0:9195
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=CONTROLLER:PLAINTEXT
+
+log.dirs=/data/kafka/controller4
+```
+
+### VM3 — `controller5.properties` (node.id=105)
+
+```properties
+process.roles=controller
+node.id=105
+controller.quorum.voters=101@10.18.0.5:9192,102@10.18.0.5:9193,103@10.118.0.5:9194,104@10.118.0.5:9195,105@10.128.0.5:9196
+
+listeners=CONTROLLER://0.0.0.0:9196
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=CONTROLLER:PLAINTEXT
+
+log.dirs=/data/kafka/controller5
+```
+
+> **Important:** with 5 controllers, the quorum can tolerate 2 simultaneous failures while remaining operational (formula 2N+1 = 5 for N=2 tolerated failures), consistent with KRaft best practices.[^1]
+
+***
+
+## Step 8 — Storage Formatting (Kafka Storage Tool)
+
+**On each VM**, for each instance (broker and controller), run the formatting with the **same Cluster ID** generated in Step 5:
+
+```bash
+nano /home/kafka/format_vm1.sh
+```
+
+## Paste This Content
+
+```bash
+#!/bin/bash
+set -e
+
+CLUSTER_ID="eCFJfuyGTTG-G5wu7YCz4A"   # replace with YOUR actual UUID generated in Step 5
+
+echo "Formatting broker1..."
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $CLUSTER_ID \
+  -c /opt/kafka/config/kraft-lab/broker1.properties
+
+echo "Formatting broker2..."
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $CLUSTER_ID \
+  -c /opt/kafka/config/kraft-lab/broker2.properties
+
+echo "Formatting controller1..."
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $CLUSTER_ID \
+  -c /opt/kafka/config/kraft-lab/controller1.properties
+
+echo "Formatting controller2..."
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $CLUSTER_ID \
+  -c /opt/kafka/config/kraft-lab/controller2.properties
+
+echo "Formatting completed on VM1."
+```
+
+**Important:** replace `eCFJfuyGTTG-G5wu7YCz4A` with the UUID you actually obtained in Step 5.
+
+## Step 4 — Save and Close nano
+
+- `Ctrl + O` (save)
+- `Enter` (confirm filename)
+- `Ctrl + X` (exit)
+
+## — Make the Script Executable
+
+```bash
+chmod +x /home/kafka/format_vm1.sh
+```
+
+## — Run the Script
+
+```bash
+/home/kafka/format_vm1.sh
+```
+
+### Expected Result
+
+```
+Formatting broker1...
+Formatted /data/kafka/broker1 with metadata.version 4.2-IV0.
+Formatting broker2...
+Formatted /data/kafka/broker2 with metadata.version 4.2-IV0.
+Formatting controller1...
+Formatted /data/kafka/controller1 with metadata.version 4.2-IV0.
+Formatting controller2...
+Formatted /data/kafka/controller2 with metadata.version 4.2-IV0.
+Formatting completed on VM1.
+```
+
+## On VM2 — Same Principle, Adapted Script
+
+```bash
+nano /home/kafka/format_vm2.sh
+```
+
+```bash
+#!/bin/bash
+set -e
+
+CLUSTER_ID="eCFJfuyGTTG-G5wu7YCz4A"   # EXACTLY the same UUID as VM1
+
+echo "Formatting broker3..."
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $CLUSTER_ID \
+  -c /opt/kafka/config/kraft-lab/broker3.properties
+
+echo "Formatting broker4..."
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $CLUSTER_ID \
+  -c /opt/kafka/config/kraft-lab/broker4.properties
+
+echo "Formatting controller3..."
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $CLUSTER_ID \
+  -c /opt/kafka/config/kraft-lab/controller3.properties
+
+echo "Formatting controller4..."
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $CLUSTER_ID \
+  -c /opt/kafka/config/kraft-lab/controller4.properties
+
+echo "Formatting completed on VM2."
+```
+
+```bash
+chmod +x /home/kafka/format_vm2.sh
+/home/kafka/format_vm2.sh
+```
+
+## On VM3 — Final Script
+
+```bash
+nano /home/kafka/format_vm3.sh
+```
+
+```bash
+#!/bin/bash
+set -e
+
+CLUSTER_ID="eCFJfuyGTTG-G5wu7YCz4A"   # EXACTLY the same UUID
+
+echo "Formatting broker5..."
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $CLUSTER_ID \
+  -c /opt/kafka/config/kraft-lab/broker5.properties
+
+echo "Formatting broker6..."
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $CLUSTER_ID \
+  -c /opt/kafka/config/kraft-lab/broker6.properties
+
+echo "Formatting controller5..."
+/opt/kafka/bin/kafka-storage.sh format \
+  -t $CLUSTER_ID \
+  -c /opt/kafka/config/kraft-lab/controller5.properties
+
+echo "Formatting completed on VM3."
+```
+
+```bash
+chmod +x /home/kafka/format_vm3.sh
+/home/kafka/format_vm3.sh
+```
+
+***
+
+## Step 9 — Starting Services
+
+**On VM1**, create the logs directory before starting services:
+
+```bash
+mkdir -p /opt/kafka/logs
+```
+
+✅ **Verification:**
+
+```bash
+ls -ld /opt/kafka/logs
+```
+
+### Expected Result
+
+```
+drwxr-xr-x 2 kafka kafka 4096 Jul 14 11:10 /opt/kafka/logs
+```
+
+Then run the startup commands normally:
+
+```bash
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/controller1.properties > /opt/kafka/logs/controller1.log 2>&1 &
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/controller2.properties > /opt/kafka/logs/controller2.log 2>&1 &
+
+sleep 15
+
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/broker1.properties > /opt/kafka/logs/broker1.log 2>&1 &
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/broker2.properties > /opt/kafka/logs/broker2.log 2>&1 &
+```
+
+## Repeat on VM2 and VM3
+
+**On VM2**:
+
+```bash
+mkdir -p /opt/kafka/logs
+
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/controller3.properties > /opt/kafka/logs/controller3.log 2>&1 &
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/controller4.properties > /opt/kafka/logs/controller4.log 2>&1 &
+
+sleep 15
+
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/broker3.properties > /opt/kafka/logs/broker3.log 2>&1 &
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/broker4.properties > /opt/kafka/logs/broker4.log 2>&1 &
+```
+
+**On VM3**:
+
+```bash
+mkdir -p /opt/kafka/logs
+
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/controller5.properties > /opt/kafka/logs/controller5.log 2>&1 &
+
+sleep 15
+
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/broker5.properties > /opt/kafka/logs/broker5.log 2>&1 &
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/broker6.properties > /opt/kafka/logs/broker6.log 2>&1 &
+```
+
+**Verification commands**
+
+```bash
+ps aux | grep kafka.Kafka | grep -v grep | grep -oP '(?<=kraft-lab/)[a-z0-9]+\.properties'
+# example if broker1 is not working
+sudo lsof /data/kafka/broker1/.lock 2>/dev/null
+# then repeat
+nohup /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/broker1.properties > /opt/kafka/logs/broker1.log 2>&1 &
+```
+
+## Verify Services Have Started Correctly
+
+```bash
+tail -f /opt/kafka/logs/controller1.log
+```
+
+### Expected Result
+
+```
+INFO [ControllerServer id=101] Finished starting controllers
+```
+
+Press `Ctrl+C` to exit `tail`, then check the broker the same way:
+
+```bash
+tail -f /opt/kafka/logs/broker1.log
+```
+
+### Expected Result
+
+```
+INFO [BrokerServer id=1] Kafka Server started
+```
+
+## Verify Processes Are Running in the Background
+
+```bash
+ps aux | grep kafka.Kafka
+```
+
+***
+
+## Step 10 — Cluster Verification
+
+From any VM:
+
+```bash
+/opt/kafka/bin/kafka-metadata-quorum.sh \
+  --bootstrap-controller 10.18.0.5:9192 \
+  describe --status
+```
+
+Create a test topic with full replication:
+
+```bash
+/opt/kafka/bin/kafka-topics.sh --create \
+  --bootstrap-server 10.18.0.5:9092,10.118.0.5:9094,10.128.0.5:9096 \
+  --topic test-drp-lab \
+  --partitions 6 \
+  --replication-factor 3
+```
+
+Verify the replica and leader distribution:
+
+```bash
+/opt/kafka/bin/kafka-topics.sh --describe \
+  --bootstrap-server 10.18.0.5:9092 \
+  --topic test-drp-lab
+```
+
+***
+
+## Step 11 — Automation with Systemd (Recommended for Training)
+
+Here is the complete procedure to create a systemd service for each broker and controller, using a generic script adapted to your topology (5 controllers + 6 brokers across 3 VMs).[^1]
+
+## Principle
+
+Each VM only hosts its own processes (VM1: brokers 1-2 + controllers 1-2; VM2: brokers 3-4 + controllers 3-4; VM3: brokers 5-6 + controller 5). You therefore only need to create the corresponding `.service` files on each VM.
+
+## Step 1 — Create the Service Template (on each VM)
+
+Create a generic service file for **brokers**:
+
+```bash
+sudo tee /etc/systemd/system/kafka-broker@.service > /dev/null <<'EOF'
+[Unit]
+Description=Apache Kafka Broker %i
+Documentation=https://kafka.apache.org/documentation/
+After=network.target
+
+[Service]
+Type=simple
+User=kafka
+Group=kafka
+Environment="JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64"
+ExecStart=/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/broker%i.properties
+ExecStop=/opt/kafka/bin/kafka-server-stop.sh
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=100000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+Create the template for **controllers**:
+
+```bash
+sudo tee /etc/systemd/system/kafka-controller@.service > /dev/null <<'EOF'
+[Unit]
+Description=Apache Kafka Controller %i
+Documentation=https://kafka.apache.org/documentation/
+After=network.target
+
+[Service]
+Type=simple
+User=kafka
+Group=kafka
+Environment="JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64"
+ExecStart=/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft-lab/controller%i.properties
+ExecStop=/opt/kafka/bin/kafka-server-stop.sh
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=100000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+> **Note:** The `@` symbol allows a single template to be used for multiple instances (e.g., `kafka-broker@1`, `kafka-broker@2`), using `%i` as a variable that takes the ID passed after the `@`.
+
+## Step 2 — Reload systemd
+
+On each VM, after creating the files:
+
+```bash
+sudo systemctl daemon-reload
+```
+
+## Step 3 — Enable and Start Services (per VM)
+
+### On VM1 (kafka-node1) — brokers 1,2 + controllers 1,2
+
+```bash
+sudo systemctl enable kafka-controller@1
+sudo systemctl enable kafka-controller@2
+sudo systemctl enable kafka-broker@1
+sudo systemctl enable kafka-broker@2
+
+sudo systemctl start kafka-controller@1
+sudo systemctl start kafka-controller@2
+sudo systemctl start kafka-broker@1
+sudo systemctl start kafka-broker@2
+```
+
+### On VM2 (kafka-node2) — brokers 3,4 + controllers 3,4
+
+```bash
+sudo systemctl enable kafka-controller@3
+sudo systemctl enable kafka-controller@4
+sudo systemctl enable kafka-broker@3
+sudo systemctl enable kafka-broker@4
+
+sudo systemctl start kafka-controller@3
+sudo systemctl start kafka-controller@4
+sudo systemctl start kafka-broker@3
+sudo systemctl start kafka-broker@4
+```
+
+### On VM3 (kafka-node3) — brokers 5,6 + controller 5
+
+```bash
+sudo systemctl enable kafka-controller@5
+sudo systemctl enable kafka-broker@5
+sudo systemctl enable kafka-broker@6
+
+sudo systemctl start kafka-controller@5
+sudo systemctl start kafka-broker@5
+sudo systemctl start kafka-broker@6
+```
+
+⚠️ **Important:** Before launching via systemd, cleanly stop all current processes started with `nohup`, otherwise you will hit the `.lock` file error encountered earlier:
+
+```bash
+ps aux | grep kafka.Kafka | grep -v grep
+kill <PID of current nohup processes>
+```
+
+## Step 4 — Check Status
+
+On each VM, after startup:
+
+```bash
+sudo systemctl status kafka-broker@1
+sudo systemctl status kafka-controller@1
+```
+
+### Expected Result
+
+```
+● kafka-broker@1.service - Apache Kafka Broker 1
+     Loaded: loaded (/etc/systemd/system/kafka-broker@.service; enabled)
+     Active: active (running) since ...
+```
+
+## Step 5 — Check Logs
+
+systemd automatically redirects logs to journald:
+
+```bash
+sudo journalctl -u kafka-broker@1 -f
+sudo journalctl -u kafka-controller@1 -f
+```
+
+## Step 6 — Validate Automatic Restart
+
+Test a full reboot of VM1 to verify everything comes back up automatically:
+
+```bash
+sudo reboot
+```
+
+After reconnecting:
+
+```bash
+sudo systemctl status kafka-broker@1 kafka-broker@2 kafka-controller@1 kafka-controller@2
+```
+
+All 4 services should show `active (running)` with no manual intervention.
+
+## Step 7 — Revalidate the Global Cluster
+
+Once all systemd services are active across the 3 VMs:
+
+```bash
+/opt/kafka/bin/kafka-metadata-quorum.sh \
+  --bootstrap-server 10.18.0.5:9092,10.118.0.5:9094,10.128.0.5:9096 \
+  describe --status
+```
+
+Repeat for each instance (broker2, controller1, controller2, etc., on each VM). This makes it easy to run the lab's DRP scenarios afterward using `systemctl stop kafka-broker3` to simulate a North region failure.
+
+***
+
+## Pre-Session Validation Checklist
+
+- ☐ Successful cross-ping between the 3 VMs
+- ☐ The 5 controllers show a healthy quorum (`describe --status`)
+- ☐ The 6 brokers appear in `kafka-metadata-quorum.sh`
+- ☐ A test topic with RF=3 replicates correctly across the 3 racks
+- ☐ Systemd services created and tested (start/stop/restart) for each instance
+- ☐ VMware snapshot taken after full validation, for quick restoration between lab sessions
+
+***
+
+This configuration faithfully reproduces the production topology (6 brokers, 5 controllers, distribution across 2 regions via `broker.rack`) while fitting on your 3 VMs.
+
+[^1]: https://kafka.apache.org/42/operations/kraft/
+[^2]: Catch-up-formation-Apache-Kafka-Luxse-Transcript.txt
