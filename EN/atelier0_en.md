@@ -114,6 +114,7 @@ sudo useradd -m -s /bin/bash kafka
 sudo passwd kafka 
 sudo mkdir -p /opt/kafka /data/kafka
 sudo chown -R kafka:kafka /opt/kafka /data/kafka
+sudo usermod -aG sudo kafka
 ```
 
 Configure the firewall (UFW) to open the required ports — **on each VM**:
