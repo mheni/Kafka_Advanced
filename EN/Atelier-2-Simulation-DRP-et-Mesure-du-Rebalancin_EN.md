@@ -272,7 +272,7 @@ sudo systemctl start kafka-controller@2
 sleep 10
 
 echo "[$(date '+%H:%M:%S')] Restarting West region brokers..."
-sudo systemctl start kafka-broker1
+sudo systemctl start kafka-broker@1
 sudo systemctl start kafka-broker@2
 
 echo "[$(date '+%H:%M:%S')] West region restarted. Service status:"
@@ -534,7 +534,7 @@ The command displays two JSON blocks on screen: `Current partition replica assig
 
 ```bash
 cat > /home/kafka/test-sync-issue-reassignment.json <<'EOF'
-{"version":1,"partitions":[{"topic":"test-sync-issue","partition":0,"replicas":[...],"log_dirs":["any","any","any"]}, ...]}
+{"version":1,"partitions":[{"topic":"test-sync-issue","partition":0,"replicas":,"log_dirs":["any","any","any"]},{"topic":"test-sync-issue","partition":1,"replicas":,"log_dirs":["any","any","any"]},{"topic":"test-sync-issue","partition":2,"replicas":,"log_dirs":["any","any","any"]},{"topic":"test-sync-issue","partition":3,"replicas":,"log_dirs":["any","any","any"]},{"topic":"test-sync-issue","partition":4,"replicas":,"log_dirs":["any","any","any"]},{"topic":"test-sync-issue","partition":5,"replicas":,"log_dirs":["any","any","any"]}]}[1][2][3][4][5][6]
 EOF
 ```
 
