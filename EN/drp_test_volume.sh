@@ -4,10 +4,10 @@
 # accumulé pendant la panne région West, avec calcul du RPO réel.
 #
 # Usage : ./drp_test_volume.sh <topic> <bootstrap-servers>
-# Exemple : ./drp_test_volume.sh vls-stations-nancy 192.168.104.130:9092,192.168.104.131:9094,192.168.104.132:9096
+# Exemple : ./drp_test_volume.sh vls-stations-nancy 10.18.0.5:9092,10.118.0.5:9094,10.128.0.5:9096
 
 TOPIC="${1:-vls-stations-nancy}"
-BOOTSTRAP="${2:-192.168.104.130:9092,192.168.104.131:9094,192.168.104.132:9096}"
+BOOTSTRAP="${2:-10.18.0.5:9092,10.118.0.5:9094,10.128.0.5:9096}"
 KAFKA_BIN="/opt/kafka/bin"
 LOGFILE="/home/kafka/drp_test_volume_$(date +%Y%m%d_%H%M%S).log"
 PRODUCER_LOG="/home/kafka/producer_during_outage_$(date +%Y%m%d_%H%M%S).log"
