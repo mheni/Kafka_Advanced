@@ -37,7 +37,18 @@ sudo systemctl restart kafka-controller1002
 ```bash
 ps aux | grep java | grep controller1002 | grep -o '\-Xmx[0-9]*G\|\-Xlog:gc[^ ]*'
 ```
+## 5.Bis increase timeout window
+```bash
+#On each controllerN.properties brokerN.properties
 
+controller.quorum.fetch.timeout.ms=5000
+controller.quorum.election.timeout.ms=5000
+Controller.quorum.request.timeout.ms=5000
+
+sudo systemctl restart kafka-controller1 kafka-controller2  # VM1, dans l'ordre habituel
+# attendre 15s
+sudo systemctl restart kafka-broker1 kafka-broker2
+```
 **6. Confirm the controller rejoined the quorum before moving to the next one**
 
 ```bash
