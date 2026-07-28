@@ -185,7 +185,27 @@ ssh kafka@10.18.0.5 "hostname"
 ```
 
 Should return `kafka-node1` without a prompt.
+### Step 4 bis — Create the Shared Truststore
 
+**Machine: VM1**, then copy to VM2 and VM3.
+
+```bash
+keytool -importcert -keystore kafka.truststore.jks -alias CARoot \
+  -file ca/ca-cert -storepass lab-password -noprompt
+```
+
+Copy the truststore and CA certificate to the other VMs from the other VMs:
+
+```bash
+scp kafka@10.18.0.5:/home/kafka/security/kafka.truststore.jks /home/kafka/security/
+```
+
+### Expected Result
+
+Identical `kafka.truststore.jks` file present on all 3 VMs — this single file allows each broker to trust the others' certificates, all signed by the same CA.
+
+**Machine: VM2** — repeat Steps A2-A3 for broker3, broker4.
+**Machine: VM3** — repeat for broker5, broker6.
 ## Step 5 — Copy the CA Folder Using a For Loop
 
 The folder to copy is `~/security/ca` (containing `ca-cert` and `ca-key`), generated once on VM1 as per Workshop 3.
@@ -241,27 +261,7 @@ Should display `Owner: CN=broker1,...` with a certificate chain leading back to 
 
 ***
 
-### Step A4 — Create the Shared Truststore
 
-**Machine: VM1**, then copy to VM2 and VM3.
-
-```bash
-keytool -importcert -keystore kafka.truststore.jks -alias CARoot \
-  -file ca/ca-cert -storepass lab-password -noprompt
-```
-
-Copy the truststore and CA certificate to the other VMs from the other VMs:
-
-```bash
-scp kafka@10.18.0.5:/home/kafka/security/kafka.truststore.jks /home/kafka/security/
-```
-
-### Expected Result
-
-Identical `kafka.truststore.jks` file present on all 3 VMs — this single file allows each broker to trust the others' certificates, all signed by the same CA.
-
-**Machine: VM2** — repeat Steps A2-A3 for broker3, broker4.
-**Machine: VM3** — repeat for broker5, broker6.
 
 ***
 
