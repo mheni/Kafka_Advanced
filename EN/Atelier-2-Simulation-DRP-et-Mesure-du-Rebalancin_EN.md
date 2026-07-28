@@ -319,7 +319,7 @@ active
 
 > **Teaching note:** on a lab cluster with little data (unlike production with multi-GB topics), rebalancing will be **significantly faster** than the hour observed in production. The lab's goal is to understand the **mechanism**, not to reproduce the same order of magnitude in time.
 
-## Step 6-bis — Repeat the exercise with a script requested by your trainer and run the same pipeline
+## Step 6-bis — Repeat the exercise with a script(PLAEASE REQUEST THE SCRIPT drp_test_volume.sh to your TRAINER) and run the same pipeline
 
 ```bash
 /home/kafka/drp_test_volume.sh vls-stations-nancy 10.18.0.5:9092,10.118.0.5:9094,10.128.0.5:9096
