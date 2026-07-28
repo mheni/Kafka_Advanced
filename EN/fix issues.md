@@ -57,3 +57,6 @@ sudo systemctl restart kafka-broker1 kafka-broker2
 
 **7. Repeat steps 2-6 for controllers 1001, 1003, 1004, 1005**, restarting one at a time and re-checking quorum health between each restart — never restart all controllers simultaneously.
 
+**8. verification**
+
+journalctl -u kafka-controller*.service --since "00:15:00" --until "00:16:30" | grep -i "NOTLEADERORFOLLOWER\|resign\|FollowerState"
