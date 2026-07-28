@@ -534,7 +534,17 @@ The command displays two JSON blocks on screen: `Current partition replica assig
 
 ```bash
 cat > /home/kafka/test-sync-issue-reassignment.json <<'EOF'
-{"version":1,"partitions":[{"topic":"test-sync-issue","partition":0,"replicas":,"log_dirs":["any","any","any"]},{"topic":"test-sync-issue","partition":1,"replicas":,"log_dirs":["any","any","any"]},{"topic":"test-sync-issue","partition":2,"replicas":,"log_dirs":["any","any","any"]},{"topic":"test-sync-issue","partition":3,"replicas":,"log_dirs":["any","any","any"]},{"topic":"test-sync-issue","partition":4,"replicas":,"log_dirs":["any","any","any"]},{"topic":"test-sync-issue","partition":5,"replicas":,"log_dirs":["any","any","any"]}]}[1][2][3][4][5][6]
+{
+  "version": 1,
+  "partitions": [
+    {"topic": "test-sync-issue", "partition": 0, "replicas": [1,3,5], "log_dirs": ["any","any","any"]},
+    {"topic": "test-sync-issue", "partition": 1, "replicas": [2,4,6], "log_dirs": ["any","any","any"]},
+    {"topic": "test-sync-issue", "partition": 2, "replicas": [3,5,1], "log_dirs": ["any","any","any"]},
+    {"topic": "test-sync-issue", "partition": 3, "replicas": [4,6,2], "log_dirs": ["any","any","any"]},
+    {"topic": "test-sync-issue", "partition": 4, "replicas": [5,1,3], "log_dirs": ["any","any","any"]},
+    {"topic": "test-sync-issue", "partition": 5, "replicas": [6,2,4], "log_dirs": ["any","any","any"]}
+  ]
+}
 EOF
 ```
 
