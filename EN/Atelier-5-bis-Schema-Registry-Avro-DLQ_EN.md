@@ -636,7 +636,6 @@ cat > src/main/java/lab/avro/DlqConsumer.java <<'JAVA'
 package lab.avro;
 
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
-import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import org.apache.kafka.clients.consumer.*;
 import org.apache.kafka.clients.producer.*;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -675,23 +674,12 @@ public class DlqConsumer {
             while (true) {
                 ConsumerRecords<String, Object> records = consumer.poll(Duration.ofSeconds(3));
                 for (ConsumerRecord<String, Object> record : records) {
-                    try {
-                        System.out.println(record.value());
-                    } catch (Exception e) {
-                        String payload = String.format(
-                            "{\\"error\\":\\"deserialization_failed\\",\\"reason\\":\\"%s\\"}",
-                            e.getMessage().replace("\\"", "'")
-                        );
-                        producer.send(new ProducerRecord<>("avro-orders-dlq", payload));
-                        producer.flush();
-                    }
+                    System.out.println(record.value());
                 }
             }
         } catch (org.apache.kafka.common.errors.SerializationException e) {
-            String payload = String.format(
-                "{\\"error\\":\\"deserialization_failed\\",\\"reason\\":\\"%s\\"}",
-                e.getMessage().replace("\\"", "'")
-            );
+            String reason = e.getMessage().replace('"', '\'');
+            String payload = "{\"error\":\"deserialization_failed\",\"reason\":\"" + reason + "\"}";
             producer.send(new ProducerRecord<>("avro-orders-dlq", payload));
             producer.flush();
         } finally {
