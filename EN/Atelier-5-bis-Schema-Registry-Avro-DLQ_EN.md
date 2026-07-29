@@ -387,6 +387,7 @@ curl -v --max-time 5 http://10.18.0.5:8081/subjects
 **Machine: VM1**
 
 ```bash
+chown kafka:kafka /home/kafka/shema-
 /opt/schema-registry/bin/kafka-avro-console-producer \
   --topic avro-orders \
   --bootstrap-server 10.18.0.5:9092,10.118.0.5:9094,10.128.0.5:9096 \
