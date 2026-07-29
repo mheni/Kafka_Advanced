@@ -374,7 +374,7 @@ Then the detail of the task(s) with their `id` and configuration.
 
 ```bash
 # this command does not work with KAFKA 4.2.1 but works with earlier versions
-/opt/kafka/bin/kafka-run-class.sh kafka.tools.JmxTool \
+/opt/kafka/bin/kafka-jmx.sh \
   --object-name kafka.connect:type=connector-task-metrics,connector=jdbc-source-station-metadata,task=0 \
   --jmx-url service:jmx:rmi:///jndi/rmi://10.18.0.5:9999/jmxrmi \
   --one-time true
